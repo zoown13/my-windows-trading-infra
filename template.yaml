@@ -27,3 +27,95 @@ Resources:
       Tags:
         - Key: Name
           Value: trading-public-subnet
+Description: Windows trading infrastructure baseline template
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where resources are deployed
+  InstanceSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet for the Windows EC2 instance
+  AllowedRdpCidr:
+    Type: String
+    Default: 203.0.113.10/32
+    Description: CIDR allowed for direct RDP access when enabled
+  UseDirectRdp:
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+    Description: Set true only when direct 3389 inbound access is explicitly required
+
+Conditions:
+  EnableDirectRdp: !Equals [!Ref UseDirectRdp, 'true']
+
+Resources:
+  WindowsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Windows trading instance
+      VpcId: !Ref VpcId
+
+  WindowsSecurityGroupRdpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: EnableDirectRdp
+    Properties:
+      GroupId: !Ref WindowsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3389
+      ToPort: 3389
+      CidrIp: !Ref AllowedRdpCidr
+      Description: Direct RDP ingress (created only when UseDirectRdp=true)
+
+  WindowsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  WindowsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref WindowsInstanceRole
+
+  TradingWindowsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0f4a6bcbfdbd78be4
+      InstanceType: t3.large
+      SubnetId: !Ref InstanceSubnetId
+      SecurityGroupIds:
+        - !Ref WindowsSecurityGroup
+      IamInstanceProfile: !Ref WindowsInstanceProfile
+      Tags:
+        - Key: Name
+          Value: trading-windows-instance
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref TradingWindowsInstance
+  DirectRdpEnabled:
+    Description: Whether direct RDP ingress was enabled
+    Value: !Ref UseDirectRdp
+Description: Windows trading infrastructure sample template
+
+Parameters:
+  AllowedRdpIp:
+    Type: String
+    Description: RDP 접속을 허용할 운영자 공인 IP CIDR (예: 203.0.113.10/32)
+    Default: 203.0.113.10/32
+    AllowedPattern: ^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}\/(?:3[0-2]|[12]?[0-9])$
+    ConstraintDescription: IPv4 CIDR 형식(x.x.x.x/0-32)으로 입력하세요.
+
+Resources: {}
