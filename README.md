@@ -1,3 +1,12 @@
+# my-windows-trading-infra
+
+CloudFormation 배포 전에 사용 가능한 가용 영역(AZ)을 먼저 확인하고 `AvailabilityZone` 파라미터에 입력하세요.
+
+```bash
+aws ec2 describe-availability-zones --query 'AvailabilityZones[].ZoneName' --output table
+```
+
+예시:
 # Windows Trading Infra
 
 이 저장소는 Windows 기반 트레이딩 워크로드를 위한 CloudFormation 템플릿(`template.yaml`)을 제공합니다.
@@ -59,6 +68,7 @@ aws cloudformation deploy \
 aws cloudformation deploy \
   --template-file template.yaml \
   --stack-name my-windows-trading-infra \
+  --parameter-overrides AvailabilityZone=ap-northeast-2a
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides AllowedRdpIp=본인공인IP/32
 ```

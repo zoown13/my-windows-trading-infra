@@ -1,4 +1,32 @@
 AWSTemplateFormatVersion: '2010-09-09'
+Description: Trading infrastructure template
+
+Parameters:
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Availability Zone to place the trading public subnet in (for example, ap-northeast-2a)
+
+Resources:
+  TradingVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: trading-vpc
+
+  TradingPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TradingVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: trading-public-subnet
 Description: Windows trading infrastructure baseline template
 
 Parameters:
