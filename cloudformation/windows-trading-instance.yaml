@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Windows trading instance with safer lifecycle and consistent tagging.
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: trading-infra
+    Description: Service tag value.
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - stage
+      - prod
+    Description: Environment tag value.
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Owner tag value.
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: AMI ID for the Windows instance.
+  InstanceType:
+    Type: String
+    Default: m6i.large
+    Description: EC2 instance type.
+  RootVolumeSize:
+    Type: Number
+    Default: 120
+    MinValue: 50
+    Description: Root EBS volume size in GiB.
+  DisableApiTermination:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Protect instance from accidental termination.
+
+Conditions:
+  EnableTerminationProtection: !Equals [!Ref DisableApiTermination, 'true']
+
+Resources:
+  TradingWindowsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      DisableApiTermination: !If [EnableTerminationProtection, true, false]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            Encrypted: true
+            VolumeSize: !Ref RootVolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ServiceName}-${Environment}-windows-trading'
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID.
+    Value: !Ref TradingWindowsInstance
