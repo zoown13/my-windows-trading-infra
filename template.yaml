@@ -205,7 +205,7 @@ Resources:
             VolumeSize: !Ref RootVolumeSize
             DeleteOnTermination: true
       UserData:
-        Fn::Base64: !Sub |
+        Fn::Base64: |
           <powershell>
           Set-TimeZone -Id "Korea Standard Time"
           </powershell>
