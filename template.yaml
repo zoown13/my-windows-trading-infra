@@ -1,0 +1,258 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EC2 instance with CloudWatch Agent and operational alarms.
+
+Parameters:
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: SSM parameter for the AMI ID.
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair name for SSH access.
+  AlarmNotificationTopicArn:
+    Type: String
+    Description: SNS Topic ARN used by CloudWatch alarms (email/Slack/Chatbot).
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH access to EC2 instance
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  EC2Role:
+Description: Trading infrastructure template
+
+Parameters:
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Availability Zone to place the trading public subnet in (for example, ap-northeast-2a)
+
+Resources:
+  TradingVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: trading-vpc
+
+  TradingPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TradingVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: trading-public-subnet
+Description: Windows trading infrastructure baseline template
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where resources are deployed
+  InstanceSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet for the Windows EC2 instance
+  AllowedRdpCidr:
+    Type: String
+    Default: 203.0.113.10/32
+    Description: CIDR allowed for direct RDP access when enabled
+  UseDirectRdp:
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+    Description: Set true only when direct 3389 inbound access is explicitly required
+
+Conditions:
+  EnableDirectRdp: !Equals [!Ref UseDirectRdp, 'true']
+
+Resources:
+  WindowsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Windows trading instance
+      VpcId: !Ref VpcId
+
+  WindowsSecurityGroupRdpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: EnableDirectRdp
+    Properties:
+      GroupId: !Ref WindowsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3389
+      ToPort: 3389
+      CidrIp: !Ref AllowedRdpCidr
+      Description: Direct RDP ingress (created only when UseDirectRdp=true)
+
+  WindowsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  TradingServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+
+          dnf install -y amazon-cloudwatch-agent
+
+          cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT_CFG'
+          {
+            "agent": {
+              "metrics_collection_interval": 60,
+              "run_as_user": "root"
+            },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/messages",
+                      "log_group_name": "/ec2/trading/messages",
+                      "log_stream_name": "{instance_id}",
+                      "retention_in_days": 14
+                    },
+                    {
+                      "file_path": "/var/log/cloud-init.log",
+                      "log_group_name": "/ec2/trading/cloud-init",
+                      "log_stream_name": "{instance_id}",
+                      "retention_in_days": 14
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          CWAGENT_CFG
+
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config \
+            -m ec2 \
+            -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
+            -s
+
+  HighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm when EC2 CPU utilization is consistently high.
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref TradingServer
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmNotificationTopicArn
+      OKActions:
+        - !Ref AlarmNotificationTopicArn
+
+  StatusCheckFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm when EC2 status check fails.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref TradingServer
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: missing
+      AlarmActions:
+        - !Ref AlarmNotificationTopicArn
+      OKActions:
+        - !Ref AlarmNotificationTopicArn
+
+  WindowsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref WindowsInstanceRole
+
+  TradingWindowsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0f4a6bcbfdbd78be4
+      InstanceType: t3.large
+      SubnetId: !Ref InstanceSubnetId
+      SecurityGroupIds:
+        - !Ref WindowsSecurityGroup
+      IamInstanceProfile: !Ref WindowsInstanceProfile
+      Tags:
+        - Key: Name
+          Value: trading-windows-instance
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref TradingServer
+  InstancePublicIp:
+    Description: Public IP of EC2 instance
+    Value: !GetAtt TradingServer.PublicIp
+    Value: !Ref TradingWindowsInstance
+  DirectRdpEnabled:
+    Description: Whether direct RDP ingress was enabled
+    Value: !Ref UseDirectRdp
+Description: Windows trading infrastructure sample template
+
+Parameters:
+  AllowedRdpIp:
+    Type: String
+    Description: RDP 접속을 허용할 운영자 공인 IP CIDR (예: 203.0.113.10/32)
+    Default: 203.0.113.10/32
+    AllowedPattern: ^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}\/(?:3[0-2]|[12]?[0-9])$
+    ConstraintDescription: IPv4 CIDR 형식(x.x.x.x/0-32)으로 입력하세요.
+
+Resources: {}
